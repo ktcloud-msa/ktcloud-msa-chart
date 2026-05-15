@@ -38,6 +38,10 @@ spec:
               mountPath: /config
               readOnly: true
 
+          envFrom:
+            - secretRef:
+                name: {{ .Release.Name }}-secrets
+
       volumes:
         - name: config-volume
           configMap:
