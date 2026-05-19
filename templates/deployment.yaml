@@ -40,7 +40,7 @@ spec:
 
           envFrom:
             - secretRef:
-                name: {{ .Release.Name }}-secrets
+                name: {{ (.Values.externalSecret | default dict).targetName | default (printf "%s-secrets" .Release.Name) }}
                 optional: true
 
       volumes:

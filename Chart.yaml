@@ -2,5 +2,15 @@ apiVersion: v2
 name: KtCloudMarketService
 description: KtCloud MSA Market Service
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "1.0.0"
+
+dependencies:
+  - name: postgresql
+    version: 16.7.x
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled
+  - name: redis
+    version: 20.0.x
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: redis.enabled
