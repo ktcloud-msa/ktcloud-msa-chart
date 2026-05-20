@@ -42,6 +42,11 @@ spec:
             - secretRef:
                 name: {{ (.Values.externalSecret | default dict).targetName | default (printf "%s-secrets" .Release.Name) }}
                 optional: true
+            {{- if .Values.jwtSecret }}
+            # JWT_SECRET here overrides any same-named key from the secret above
+            - secretRef:
+                name: {{ .Release.Name }}-jwt
+            {{- end }}
 
       volumes:
         - name: config-volume
