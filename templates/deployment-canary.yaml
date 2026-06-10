@@ -1,40 +1,35 @@
+{{- if .Values.canary.enabled }}
+# Canary Deployment — a second ReplicaSet carrying the same `app` selector
+# label (so it sits behind the same Service) but `version: canary`. The Istio
+# DestinationRule subset + VirtualService weight route a slice of traffic here.
+# Image tag comes from canary.tag; replica count is fixed (small) and NOT
+# autoscaled, so the canary share is purely weight-driven.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Release.Name }}
+  name: {{ .Release.Name }}-canary
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "ktcloud.labels" . | nindent 4 }}
-    version: stable
+    version: canary
 spec:
-  {{- /* When an HPA or a KEDA ScaledObject owns the replica count, omit
-         spec.replicas so GitOps does not fight the autoscaler. */}}
-  {{- if not (or .Values.autoscaling.enabled .Values.keda.enabled) }}
-  replicas: {{ .Values.replicaCount | default 2 }}
-  {{- end }}
+  replicas: {{ .Values.canary.replicaCount | default 1 }}
   strategy:
-    type: {{ .Values.strategy.type | default "RollingUpdate" }}
-    {{- if eq (.Values.strategy.type | default "RollingUpdate") "RollingUpdate" }}
+    type: RollingUpdate
     rollingUpdate:
-      maxSurge: {{ .Values.strategy.maxSurge | default 1 }}
-      maxUnavailable: {{ .Values.strategy.maxUnavailable | default 0 }}
-    {{- end }}
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
-      {{- include "ktcloud.selectorLabels" . | nindent 6 }}
+      app: {{ .Release.Name }}
+      version: canary
   template:
     metadata:
       labels:
         {{- include "ktcloud.labels" . | nindent 8 }}
-        version: stable
+        version: canary
       annotations:
-        # Roll the Pods whenever the rendered config changes.
         checksum/config: {{ .Values.appConfig | toYaml | sha256sum }}
-        {{- if .Values.metrics.serviceMonitor.enabled }}
-        prometheus.io/scrape: "true"
-        prometheus.io/path: {{ .Values.metrics.serviceMonitor.path | quote }}
-        prometheus.io/port: {{ include "ktcloud.httpPort" . | quote }}
-        {{- end }}
     spec:
       serviceAccountName: {{ include "ktcloud.serviceAccountName" . }}
       automountServiceAccountToken: {{ (default dict .Values.serviceAccount).automountServiceAccountToken | default false }}
@@ -49,9 +44,8 @@ spec:
       {{- end }}
       containers:
         - name: {{ .Release.Name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}"
+          image: "{{ .Values.image.repository }}:{{ .Values.canary.tag | default .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
-
           ports:
             - name: http
               containerPort: {{ .Values.appConfig.server.port | default 8080 }}
@@ -61,10 +55,8 @@ spec:
               containerPort: {{ .Values.appConfig.grpc.server.port | default 9090 }}
               protocol: TCP
             {{- end }}
-
           args:
             - "--spring.config.location=optional:classpath:/,optional:file:/config/application.yaml"
-
           {{- if .Values.securityContext.enabled }}
           securityContext:
             runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
@@ -75,41 +67,24 @@ spec:
             capabilities:
               drop: ["ALL"]
           {{- end }}
-
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-
           {{- if .Values.probes.enabled }}
-          {{- if .Values.probes.startup.enabled }}
-          startupProbe:
-            httpGet:
-              path: {{ .Values.probes.startup.path }}
-              port: http
-            initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
-            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
-            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
-          {{- end }}
           livenessProbe:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
               port: http
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
-            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           readinessProbe:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
               port: http
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
-            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
-            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           {{- end }}
-
           volumeMounts:
             - name: config-volume
               mountPath: /config
@@ -118,51 +93,14 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- end }}
-
           envFrom:
             - secretRef:
                 name: {{ (.Values.externalSecret | default dict).targetName | default (printf "%s-secrets" .Release.Name) }}
                 optional: true
             {{- if .Values.jwtSecret }}
-            # JWT_SECRET here overrides any same-named key from the secret above
             - secretRef:
                 name: {{ .Release.Name }}-jwt
             {{- end }}
-
-        {{- if .Values.jmxExporter.enabled }}
-        # ------------------------------------------------------------------
-        # Optional JMX-exporter sidecar: exposes JVM GC pause count/duration +
-        # heap usage as Prometheus metrics on :{{ .Values.jmxExporter.port }}.
-        # ------------------------------------------------------------------
-        - name: jmx-exporter
-          image: {{ .Values.jmxExporter.image }}
-          ports:
-            - name: jmx-metrics
-              containerPort: {{ .Values.jmxExporter.port }}
-              protocol: TCP
-          args:
-            - "{{ .Values.jmxExporter.port }}"
-            - "/etc/jmx-exporter/config.yaml"
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: {{ .Values.securityContext.runAsUser | default 1001 }}
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          resources:
-            requests:
-              cpu: 25m
-              memory: 96Mi
-            limits:
-              cpu: 200m
-              memory: 256Mi
-          volumeMounts:
-            - name: jmx-exporter-config
-              mountPath: /etc/jmx-exporter
-              readOnly: true
-        {{- end }}
-
       volumes:
         - name: config-volume
           configMap:
@@ -171,8 +109,4 @@ spec:
         - name: tmp
           emptyDir: {}
         {{- end }}
-        {{- if .Values.jmxExporter.enabled }}
-        - name: jmx-exporter-config
-          configMap:
-            name: {{ .Release.Name }}-jmx-exporter
-        {{- end }}
+{{- end }}

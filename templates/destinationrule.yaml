@@ -1,0 +1,42 @@
+{{- if and .Values.istio.enabled .Values.istio.destinationRule.enabled }}
+{{- $dr := .Values.istio.destinationRule -}}
+# Istio DestinationRule — carries the circuit breaker (connectionPool),
+# outlier detection (consecutive 5xx -> eject), locality-aware load balancing,
+# and the stable/canary subsets the VirtualService weights against.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktcloud.labels" . | nindent 4 }}
+spec:
+  host: {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_REQUEST
+      {{- if $dr.localityLb.enabled }}
+      localityLbSetting:
+        enabled: true
+      {{- end }}
+    connectionPool:
+      tcp:
+        maxConnections: {{ $dr.connectionPool.tcp.maxConnections }}
+        connectTimeout: {{ $dr.connectionPool.tcp.connectTimeout }}
+      http:
+        http1MaxPendingRequests: {{ $dr.connectionPool.http.http1MaxPendingRequests }}
+        http2MaxRequests: {{ $dr.connectionPool.http.http2MaxRequests }}
+        maxRequestsPerConnection: {{ $dr.connectionPool.http.maxRequestsPerConnection }}
+    outlierDetection:
+      consecutive5xxErrors: {{ $dr.outlierDetection.consecutive5xxErrors }}
+      interval: {{ $dr.outlierDetection.interval }}
+      baseEjectionTime: {{ $dr.outlierDetection.baseEjectionTime }}
+      maxEjectionPercent: {{ $dr.outlierDetection.maxEjectionPercent }}
+  subsets:
+    - name: stable
+      labels:
+        version: stable
+    - name: canary
+      labels:
+        version: canary
+{{- end }}

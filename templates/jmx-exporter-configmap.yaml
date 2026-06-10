@@ -1,0 +1,28 @@
+{{- if .Values.jmxExporter.enabled }}
+# Config for the optional JMX-exporter sidecar. Surfaces JVM GC pause counts /
+# durations and heap usage so Grafana can correlate Stop-the-World events with
+# latency spikes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-jmx-exporter
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktcloud.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    hostPort: 127.0.0.1:{{ .Values.jmxExporter.jmxPort | default 9010 }}
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    rules:
+      - pattern: 'java.lang<type=GarbageCollector, name=(.+)><>CollectionCount'
+        name: jvm_gc_collection_count
+        labels:
+          gc: "$1"
+      - pattern: 'java.lang<type=GarbageCollector, name=(.+)><>CollectionTime'
+        name: jvm_gc_collection_time_ms
+        labels:
+          gc: "$1"
+      - pattern: 'java.lang<type=Memory><HeapMemoryUsage>used'
+        name: jvm_memory_heap_used_bytes
+{{- end }}

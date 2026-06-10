@@ -1,0 +1,16 @@
+{{- if .Values.pdb.enabled }}
+# PodDisruptionBudget — guarantees the service keeps >= minAvailable Pods
+# during voluntary disruptions (node drain, cluster upgrade/maintenance).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktcloud.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.pdb.minAvailable | default 2 }}
+  selector:
+    matchLabels:
+      {{- include "ktcloud.selectorLabels" . | nindent 6 }}
+{{- end }}

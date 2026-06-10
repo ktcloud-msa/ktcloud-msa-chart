@@ -1,0 +1,37 @@
+{{- if and .Values.istio.enabled .Values.istio.virtualService.enabled }}
+{{- $vs := .Values.istio.virtualService -}}
+# Istio VirtualService — retries + timeout, plus weighted stable/canary split.
+# Progressive canary is a values bump on canary.weight (20 -> 50 -> 100).
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktcloud.labels" . | nindent 4 }}
+spec:
+  hosts:
+    - {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+  http:
+    - route:
+        {{- if .Values.canary.enabled }}
+        - destination:
+            host: {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+            subset: stable
+          weight: {{ sub 100 (int .Values.canary.weight) }}
+        - destination:
+            host: {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+            subset: canary
+          weight: {{ int .Values.canary.weight }}
+        {{- else }}
+        - destination:
+            host: {{ .Release.Name }}.{{ .Release.Namespace }}.svc.cluster.local
+            subset: stable
+          weight: 100
+        {{- end }}
+      retries:
+        attempts: {{ $vs.retries.attempts }}
+        perTryTimeout: {{ $vs.retries.perTryTimeout }}
+        retryOn: {{ $vs.retries.retryOn | quote }}
+      timeout: {{ $vs.timeout }}
+{{- end }}

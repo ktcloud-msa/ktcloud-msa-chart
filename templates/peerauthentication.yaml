@@ -1,0 +1,18 @@
+{{- if and .Values.istio.enabled .Values.istio.peerAuthentication.enabled }}
+# Istio PeerAuthentication — per-workload mTLS mode. Default PERMISSIVE so
+# non-injected/legacy callers keep working during rollout; flip to STRICT
+# (per service or namespace-wide) to enforce encrypted mesh traffic.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktcloud.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ktcloud.selectorLabels" . | nindent 6 }}
+  mtls:
+    mode: {{ .Values.istio.peerAuthentication.mode | default "PERMISSIVE" }}
+{{- end }}

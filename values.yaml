@@ -1,0 +1,229 @@
+# =============================================================================
+# Default values for the shared KtCloudMarket MSA chart.
+#
+# Until now this chart shipped *no* values.yaml — every key came from the
+# per-service ktcloud-msa-values/<svc>/values-release.yaml overlay. These
+# defaults make the new platform features (probes, HPA, PDB, security context,
+# ServiceMonitor, NetworkPolicy, Istio traffic management, KEDA) work
+# out-of-the-box and stay overridable per service.
+#
+# Design rule: every block below is feature-flagged so a single service can
+# opt out without forking the chart.
+# =============================================================================
+
+# Static (non-autoscaled) replica count. Ignored when autoscaling.enabled=true
+# because the HPA owns spec.replicas in that case.
+replicaCount: 2
+
+image:
+  repository: ""        # always set per service
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+
+# ---------------------------------------------------------------------------
+# Rolling update strategy — zero-downtime deploys (maxUnavailable: 0 keeps the
+# full Pod count serving while a surge Pod rolls in).
+# ---------------------------------------------------------------------------
+strategy:
+  type: RollingUpdate
+  maxSurge: 1
+  maxUnavailable: 0
+
+# ---------------------------------------------------------------------------
+# Resource requests/limits. Requests drive HPA % math and scheduler placement;
+# limits cap noisy-neighbour blast radius. Memory request==limit avoids OOM
+# surprises on a JVM.
+# ---------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Pod / container security context.
+# Satisfies the OPA Gatekeeper constraints (runAsNonRoot, readOnlyRootFilesystem)
+# and the "non-root appuser UID 1001" build requirement at *runtime* level.
+# A writable emptyDir is mounted at /tmp because readOnlyRootFilesystem=true
+# otherwise breaks the JVM temp dir.
+# ---------------------------------------------------------------------------
+securityContext:
+  enabled: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  seccompProfile: RuntimeDefault
+
+# Writable scratch volumes required once readOnlyRootFilesystem=true.
+tmpVolumes:
+  enabled: true
+
+# ---------------------------------------------------------------------------
+# Health probes. Spring Boot Actuator is served on the HTTP port with
+# management.endpoints.web.base-path '/', and the health endpoint remapped to
+# 'healthz'. With management.endpoint.health.probes.enabled=true the framework
+# exposes the K8s-style groups:
+#   /healthz/liveness   -> livenessState  (process alive only)
+#   /healthz/readiness  -> readinessState + db/redis (traffic gating)
+# ---------------------------------------------------------------------------
+probes:
+  enabled: true
+  liveness:
+    path: /healthz/liveness
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  readiness:
+    path: /healthz/readiness
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+  startup:
+    enabled: true
+    path: /healthz/liveness
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 30   # 30*10s = up to 5 min for slow JVM cold start
+
+# ---------------------------------------------------------------------------
+# Prometheus scraping via a ServiceMonitor (kube-prometheus-stack picks up any
+# ServiceMonitor regardless of label — see its prometheusSpec selectors).
+# ---------------------------------------------------------------------------
+metrics:
+  serviceMonitor:
+    enabled: true
+    port: http              # Service port name to scrape
+    path: /prometheus       # Actuator Prometheus endpoint (base-path '/')
+    interval: 15s
+    scrapeTimeout: 10s
+    honorLabels: true
+
+# ---------------------------------------------------------------------------
+# Horizontal Pod Autoscaler — CPU 70%, min 2 / max 10 (per requirement).
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0   # 0 disables the memory metric
+  behavior: {}                           # optional scaleUp/scaleDown stabilization
+
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget — keep >=2 Pods during voluntary disruptions
+# (node drain / cluster maintenance).
+# ---------------------------------------------------------------------------
+pdb:
+  enabled: true
+  minAvailable: 2
+
+# ---------------------------------------------------------------------------
+# Per-service ServiceAccount + least-privilege Role/RoleBinding (namespaced,
+# never a ClusterRole). automount disabled — the apps do not call the API.
+# ---------------------------------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+rbac:
+  create: true
+  # Minimal read access to this service's own ConfigMap (config introspection).
+  rules:
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "list", "watch"]
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy — default-deny ingress, then allow only:
+#   * intra-namespace traffic (service-to-service mesh)
+#   * Prometheus scrape from the monitoring namespace
+#   * (gateway only) external ingress when allowExternal=true
+# Egress allows DNS + intra-namespace + the data namespaces (postgres/redis/kafka).
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  allowExternal: false
+  monitoringNamespace: kube-prometheus-stack
+  dataNamespaces:
+    - kafka
+  ingressNamespaceLabel: kubernetes.io/metadata.name
+
+# ---------------------------------------------------------------------------
+# Istio traffic management. DestinationRule carries the circuit breaker
+# (connectionPool) + outlier detection; VirtualService carries retries/timeout
+# and stable/canary weighting; PeerAuthentication carries the mTLS mode.
+# ---------------------------------------------------------------------------
+istio:
+  enabled: true
+  peerAuthentication:
+    enabled: true
+    mode: PERMISSIVE          # flip to STRICT to enforce mesh mTLS
+  destinationRule:
+    enabled: true
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 3s
+      http:
+        http1MaxPendingRequests: 64
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    localityLb:
+      enabled: true
+  virtualService:
+    enabled: true
+    timeout: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+      retryOn: "5xx,reset,connect-failure,refused-stream"
+
+# ---------------------------------------------------------------------------
+# Canary deployment. When enabled, a second Deployment is rendered with the
+# `version: canary` subset and `canary.tag` image; the VirtualService splits
+# traffic stable/(100-weight) : canary/weight. Progressive shift is a values
+# bump: 20 -> 50 -> 100.
+# ---------------------------------------------------------------------------
+canary:
+  enabled: false
+  weight: 20
+  tag: ""
+  replicaCount: 1
+
+# ---------------------------------------------------------------------------
+# KEDA event-driven autoscaling (Kafka consumer lag, cron pre-warm). Off by
+# default; the inventory/order services opt in. When enabled, KEDA's
+# ScaledObject OWNS the HPA, so set autoscaling.enabled=false on that service.
+# ---------------------------------------------------------------------------
+keda:
+  enabled: false
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  cooldownPeriod: 120
+  pollingInterval: 15
+  triggers: []   # e.g. kafka lag + cron, supplied per service
+
+# ---------------------------------------------------------------------------
+# Optional JMX-exporter sidecar (JVM GC / heap metrics to Prometheus).
+# ---------------------------------------------------------------------------
+jmxExporter:
+  enabled: false
+  image: bitnami/jmx-exporter:1.0.1
+  port: 5556
