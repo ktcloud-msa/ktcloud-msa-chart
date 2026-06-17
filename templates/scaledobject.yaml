@@ -12,8 +12,13 @@ metadata:
     {{- include "ktcloud.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
+    {{- if .Values.rollout.enabled }}
+    apiVersion: argoproj.io/v1alpha1
+    kind: Rollout
+    {{- else }}
     apiVersion: apps/v1
     kind: Deployment
+    {{- end }}
     name: {{ .Release.Name }}
   minReplicaCount: {{ .Values.keda.minReplicaCount | default 2 }}
   maxReplicaCount: {{ .Values.keda.maxReplicaCount | default 10 }}

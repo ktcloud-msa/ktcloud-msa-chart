@@ -1,4 +1,4 @@
-{{- if .Values.canary.enabled }}
+{{- if and .Values.canary.enabled (not .Values.rollout.enabled) }}
 # Canary Deployment — a second ReplicaSet carrying the same `app` selector
 # label (so it sits behind the same Service) but `version: canary`. The Istio
 # DestinationRule subset + VirtualService weight route a slice of traffic here.

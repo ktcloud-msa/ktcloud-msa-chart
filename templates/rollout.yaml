@@ -1,6 +1,12 @@
-{{- if not .Values.rollout.enabled }}
-apiVersion: apps/v1
-kind: Deployment
+{{- if .Values.rollout.enabled }}
+# Argo Rollouts progressive canary. Replaces the plain Deployment (which is
+# gated off when rollout.enabled) and the Istio-weighted canary Deployment.
+# The pod spec mirrors deployment.yaml exactly so a service can flip between
+# the two delivery modes with a single flag. Traffic split is pod-count
+# proportional behind the one Service; an Analysis step gates each weight bump
+# on the Prometheus 5xx error-rate recording rule and auto-rolls-back on breach.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
 metadata:
   name: {{ .Release.Name }}
   namespace: {{ .Release.Namespace }}
@@ -8,28 +14,42 @@ metadata:
     {{- include "ktcloud.labels" . | nindent 4 }}
     version: stable
 spec:
-  {{- /* When an HPA or a KEDA ScaledObject owns the replica count, omit
-         spec.replicas so GitOps does not fight the autoscaler. */}}
+  {{- /* When KEDA/HPA owns the replica count, omit replicas so the autoscaler
+         (which targets this Rollout) is authoritative. */}}
   {{- if not (or .Values.autoscaling.enabled .Values.keda.enabled) }}
   replicas: {{ .Values.replicaCount | default 2 }}
   {{- end }}
-  strategy:
-    type: {{ .Values.strategy.type | default "RollingUpdate" }}
-    {{- if eq (.Values.strategy.type | default "RollingUpdate") "RollingUpdate" }}
-    rollingUpdate:
-      maxSurge: {{ .Values.strategy.maxSurge | default 1 }}
-      maxUnavailable: {{ .Values.strategy.maxUnavailable | default 0 }}
-    {{- end }}
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       {{- include "ktcloud.selectorLabels" . | nindent 6 }}
+  strategy:
+    canary:
+      scaleDownDelaySeconds: {{ .Values.rollout.scaleDownDelaySeconds | default 30 }}
+      # Argo labels the canary/stable ReplicaSets so the existing Istio
+      # DestinationRule subsets (version: stable|canary) keep classifying pods.
+      canaryMetadata:
+        labels:
+          version: canary
+      stableMetadata:
+        labels:
+          version: stable
+      steps:
+        {{- range .Values.rollout.steps }}
+        {{- if hasKey . "analysis" }}
+        - analysis:
+            templates:
+              - templateName: {{ $.Release.Name }}-error-rate
+        {{- else }}
+        - {{ toYaml . | nindent 10 | trim }}
+        {{- end }}
+        {{- end }}
   template:
     metadata:
       labels:
         {{- include "ktcloud.labels" . | nindent 8 }}
         version: stable
       annotations:
-        # Roll the Pods whenever the rendered config changes.
         checksum/config: {{ .Values.appConfig | toYaml | sha256sum }}
         {{- if .Values.metrics.serviceMonitor.enabled }}
         prometheus.io/scrape: "true"
@@ -52,7 +72,6 @@ spec:
         - name: {{ .Release.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default "latest" }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
-
           ports:
             - name: http
               containerPort: {{ .Values.appConfig.server.port | default 8080 }}
@@ -62,10 +81,8 @@ spec:
               containerPort: {{ .Values.appConfig.grpc.server.port | default 9090 }}
               protocol: TCP
             {{- end }}
-
           args:
             - "--spring.config.location=optional:classpath:/,optional:file:/config/application.yaml"
-
           {{- if .Values.securityContext.enabled }}
           securityContext:
             runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
@@ -76,12 +93,10 @@ spec:
             capabilities:
               drop: ["ALL"]
           {{- end }}
-
           {{- with .Values.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-
           {{- if .Values.probes.enabled }}
           {{- if .Values.probes.startup.enabled }}
           startupProbe:
@@ -110,7 +125,6 @@ spec:
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
             failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           {{- end }}
-
           volumeMounts:
             - name: config-volume
               mountPath: /config
@@ -119,51 +133,14 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- end }}
-
           envFrom:
             - secretRef:
                 name: {{ (.Values.externalSecret | default dict).targetName | default (printf "%s-secrets" .Release.Name) }}
                 optional: true
             {{- if .Values.jwtSecret }}
-            # JWT_SECRET here overrides any same-named key from the secret above
             - secretRef:
                 name: {{ .Release.Name }}-jwt
             {{- end }}
-
-        {{- if .Values.jmxExporter.enabled }}
-        # ------------------------------------------------------------------
-        # Optional JMX-exporter sidecar: exposes JVM GC pause count/duration +
-        # heap usage as Prometheus metrics on :{{ .Values.jmxExporter.port }}.
-        # ------------------------------------------------------------------
-        - name: jmx-exporter
-          image: {{ .Values.jmxExporter.image }}
-          ports:
-            - name: jmx-metrics
-              containerPort: {{ .Values.jmxExporter.port }}
-              protocol: TCP
-          args:
-            - "{{ .Values.jmxExporter.port }}"
-            - "/etc/jmx-exporter/config.yaml"
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: {{ .Values.securityContext.runAsUser | default 1001 }}
-            readOnlyRootFilesystem: true
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-          resources:
-            requests:
-              cpu: 25m
-              memory: 96Mi
-            limits:
-              cpu: 200m
-              memory: 256Mi
-          volumeMounts:
-            - name: jmx-exporter-config
-              mountPath: /etc/jmx-exporter
-              readOnly: true
-        {{- end }}
-
       volumes:
         - name: config-volume
           configMap:
@@ -171,10 +148,5 @@ spec:
         {{- if .Values.tmpVolumes.enabled }}
         - name: tmp
           emptyDir: {}
-        {{- end }}
-        {{- if .Values.jmxExporter.enabled }}
-        - name: jmx-exporter-config
-          configMap:
-            name: {{ .Release.Name }}-jmx-exporter
         {{- end }}
 {{- end }}

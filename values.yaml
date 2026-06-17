@@ -208,6 +208,43 @@ canary:
   replicaCount: 1
 
 # ---------------------------------------------------------------------------
+# Argo Rollouts progressive delivery. When rollout.enabled=true the chart
+# renders a Rollout (argoproj.io) INSTEAD of the plain Deployment, and the
+# Istio-weighted canary Deployment is suppressed (Argo owns the canary
+# ReplicaSet). The canary advances through `steps`; an inline Analysis step
+# queries the service 5xx error-rate recording rule in Prometheus and, if it
+# breaches the threshold, the Rollout auto-aborts and rolls back to stable.
+#
+# Pod-count proportional traffic split is used (all stable+canary pods sit
+# behind the one Service), so this does NOT fight ArgoCD over the Istio
+# DestinationRule subsets — the VirtualService/DestinationRule keep providing
+# retries / circuit-breaking unchanged. KEDA/HPA, when enabled, target the
+# Rollout instead of the Deployment automatically.
+# ---------------------------------------------------------------------------
+rollout:
+  enabled: false
+  # Canary step ladder: weight %, then a soak pause, then an error-rate gate.
+  steps:
+    - setWeight: 20
+    - pause: { duration: 120 }
+    - analysis: true            # run the error-rate AnalysisTemplate
+    - setWeight: 50
+    - pause: { duration: 120 }
+    - analysis: true
+    - setWeight: 80
+    - pause: { duration: 60 }
+  # revisionHistoryLimit / scaleDownDelay for the old ReplicaSet after promote.
+  scaleDownDelaySeconds: 30
+  analysis:
+    # Prometheus the AnalysisRun queries (kube-prometheus-stack, fullname "kps").
+    prometheusAddress: http://kps-prometheus.kube-prometheus-stack.svc.cluster.local:9090
+    # Abort (roll back) once the 5xx ratio exceeds this over the window.
+    errorRateThreshold: "0.05"
+    interval: 60s
+    count: 3            # number of measurements per analysis step
+    failureLimit: 1     # consecutive failures that abort the rollout
+
+# ---------------------------------------------------------------------------
 # KEDA event-driven autoscaling (Kafka consumer lag, cron pre-warm). Off by
 # default; the inventory/order services opt in. When enabled, KEDA's
 # ScaledObject OWNS the HPA, so set autoscaling.enabled=false on that service.
