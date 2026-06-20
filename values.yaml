@@ -258,6 +258,32 @@ keda:
   triggers: []   # e.g. kafka lag + cron, supplied per service
 
 # ---------------------------------------------------------------------------
+# CloudNativePG database. When cnpg.enabled=true the chart renders a
+# postgresql.cnpg.io/v1 Cluster (HA Postgres) plus a basic-auth ExternalSecret
+# the cluster bootstraps from. Replaces the old Bitnami `postgresql:` subchart.
+# Each service sets name/database/owner; the app connects to `<name>-rw`.
+# ---------------------------------------------------------------------------
+cnpg:
+  enabled: false
+  name: ""                                      # per service, e.g. order-postgres
+  instances: 3                                  # 1 primary + 2 replicas (HA)
+  imageName: ghcr.io/cloudnative-pg/postgresql:16
+  database: ""                                  # e.g. order_db
+  owner: ""                                     # e.g. order-service (== app user)
+  storage:
+    storageClass: ebs-sc
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  monitoring:
+    enablePodMonitor: true
+
+# ---------------------------------------------------------------------------
 # Optional JMX-exporter sidecar (JVM GC / heap metrics to Prometheus).
 # ---------------------------------------------------------------------------
 jmxExporter:

@@ -1,0 +1,48 @@
+{{- if .Values.cnpg.enabled }}
+# CloudNativePG Cluster — replaces the former Bitnami `postgresql` subchart.
+# The cnpg-operator (platform/40-cnpg-operator) reconciles this CR into a
+# {{ .Values.cnpg.instances }}-instance HA Postgres (1 primary + replicas) and
+# publishes the {{ .Values.cnpg.name }}-rw / -ro / -r Services. The app's
+# datasource points at the -rw Service; failover repoints it automatically.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Values.cnpg.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ktcloud.labels" . | nindent 4 }}
+spec:
+  instances: {{ .Values.cnpg.instances | default 3 }}
+  imageName: {{ .Values.cnpg.imageName }}
+  # Roll minor-version / config changes without manual intervention.
+  primaryUpdateStrategy: unsupervised
+
+  bootstrap:
+    initdb:
+      database: {{ .Values.cnpg.database }}
+      owner: {{ .Values.cnpg.owner }}
+      # Adopt the pre-created basic-auth Secret (postgres-cnpg-secret.yaml) so
+      # the app role's password == the app's DB_PASSWORD from AWS Secrets Manager.
+      secret:
+        name: {{ .Values.cnpg.name }}-app
+
+  storage:
+    storageClass: {{ .Values.cnpg.storage.storageClass }}
+    size: {{ .Values.cnpg.storage.size }}
+
+  {{- with .Values.cnpg.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+  # Spread the instances across nodes so a single node loss can't take the DB down.
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+
+  {{- if .Values.cnpg.monitoring.enablePodMonitor }}
+  monitoring:
+    # kube-prometheus-stack discovers the per-instance PodMonitor automatically.
+    enablePodMonitor: true
+  {{- end }}
+{{- end }}
