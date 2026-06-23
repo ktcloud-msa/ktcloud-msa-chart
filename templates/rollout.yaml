@@ -25,7 +25,10 @@ spec:
       {{- include "ktcloud.selectorLabels" . | nindent 6 }}
   strategy:
     canary:
-      scaleDownDelaySeconds: {{ .Values.rollout.scaleDownDelaySeconds | default 30 }}
+      # NOTE: scaleDownDelaySeconds is intentionally omitted — Argo Rollouts only
+      # accepts it together with traffic routing (trafficRouting.*), and this
+      # chart uses pod-count-proportional canary (no traffic router), so setting
+      # it makes the Rollout spec invalid ("InvalidSpec").
       # Argo labels the canary/stable ReplicaSets so the existing Istio
       # DestinationRule subsets (version: stable|canary) keep classifying pods.
       canaryMetadata:
