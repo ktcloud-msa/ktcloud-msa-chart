@@ -17,6 +17,16 @@ spec:
   # Roll minor-version / config changes without manual intervention.
   primaryUpdateStrategy: unsupervised
 
+  # Exclude CNPG pods from the Istio mesh. The namespace has istio-injection
+  # enabled, but CNPG's short-lived bootstrap/join pods hit the Kubernetes API
+  # server at startup BEFORE the istio-proxy sidecar is ready, so replica `join`
+  # fails with "dial tcp 10.96.0.1:443: connection refused" and the cluster never
+  # reaches full HA. Postgres uses CNPG's own TLS and stays in-namespace, so the
+  # mesh adds little. inheritedMetadata propagates to every CNPG-managed pod.
+  inheritedMetadata:
+    annotations:
+      sidecar.istio.io/inject: "false"
+
   bootstrap:
     initdb:
       database: {{ .Values.cnpg.database }}
